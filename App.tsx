@@ -1,8 +1,8 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Upload, Music, Image as ImageIcon, FileText, Play, Pause, Download, MonitorPlay, Settings, AlignLeft, Sun, Sparkles } from 'lucide-react';
-import { parseLrc } from './utils/lrcParser';
-import { renderFrame } from './utils/renderer';
-import { MediaState, AppSettings } from './types';
+import { parseLrc } from './utils/lrcParser.ts';
+import { renderFrame } from './utils/renderer.ts';
+import type { MediaState, AppSettings } from './types.ts';
 
 // Default Settings
 const DEFAULT_SETTINGS: AppSettings = {
@@ -44,7 +44,7 @@ function App() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
-  const requestRef = useRef<number>();
+  const requestRef = useRef<number | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   

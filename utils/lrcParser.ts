@@ -1,4 +1,4 @@
-import { LyricLine } from '../types';
+import type { LyricLine } from '../types.ts';
 
 export const parseLrc = (lrcContent: string): LyricLine[] => {
   const lines = lrcContent.split('\n');

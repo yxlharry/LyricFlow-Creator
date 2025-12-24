@@ -1,4 +1,4 @@
-import { AppSettings, LyricLine } from '../types';
+import type { AppSettings, LyricLine } from '../types.ts';
 
 interface RenderContext {
   ctx: CanvasRenderingContext2D;

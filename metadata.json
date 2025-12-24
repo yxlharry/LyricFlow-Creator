@@ -1,0 +1,5 @@
+{
+  "name": "LyricFlow Karaoke Creator",
+  "description": "Create modern, 16:9 karaoke videos by combining LRC lyrics, WAV audio, and album art directly in your browser.",
+  "requestFramePermissions": []
+}

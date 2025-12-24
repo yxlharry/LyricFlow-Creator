@@ -82,7 +82,9 @@ interface RenderContext {
   currentTime: number;
   smoothActiveIndex: number;
   absoluteTime: number; // Monotonic time for animations independent of audio
-  isIntro: boolean; 
+  isIntro: boolean;
+  titleOpacity: number; // 0 to 1
+  lyricsOpacity: number; // 0 to 1
   settings: AppSettings;
 }
 
@@ -264,6 +266,8 @@ const renderFrame = ({
   smoothActiveIndex,
   absoluteTime,
   isIntro,
+  titleOpacity,
+  lyricsOpacity,
   settings,
 }: RenderContext) => {
   // 1. Clear Screen
@@ -336,6 +340,7 @@ const renderFrame = ({
       const titleY = verticalCenter;
       
       ctx.save();
+      ctx.globalAlpha = titleOpacity; // Apply Fade Out
       ctx.font = `bold ${settings.fontSize * 1.5}px Inter, sans-serif`;
       ctx.fillStyle = settings.primaryColor;
       ctx.shadowColor = settings.primaryColor;
@@ -395,6 +400,9 @@ const renderFrame = ({
     if (absDist > 1.2) {
         blur = (absDist - 1.2) * 2;
     }
+
+    // Apply Global Fade In for Lyrics
+    alpha = alpha * lyricsOpacity;
 
     if (alpha <= 0.01) continue;
 
@@ -477,6 +485,12 @@ function App() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   
+  // Audio API Refs
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const audioSourceNodeRef = useRef<MediaElementAudioSourceNode | null>(null);
+  const audioDestNodeRef = useRef<MediaStreamAudioDestinationNode | null>(null);
+  const silenceOscRef = useRef<OscillatorNode | null>(null);
+  
   // Animation State
   const smoothIndexRef = useRef<number>(0);
   const introStartTimeRef = useRef<number>(0); // Timestamp when intro started
@@ -520,11 +534,26 @@ function App() {
         // Determine Time and Intro Status
         let time = 0;
         let isIntro = false;
+        
+        // Transition Opacities
+        let titleOpacity = 1.0;
+        let lyricsOpacity = 1.0;
+        const FADE_DURATION = 0.5; // Seconds
 
         if (recordingPhase === 'intro') {
             // In Intro Recording Mode
             isIntro = true;
             const elapsed = (Date.now() - introStartTimeRef.current) / 1000;
+            
+            // Fade out title at end of intro
+            const remaining = settings.introDuration - elapsed;
+            if (remaining < FADE_DURATION) {
+                titleOpacity = Math.max(0, remaining / FADE_DURATION);
+            } else {
+                titleOpacity = 1.0;
+            }
+            lyricsOpacity = 0; // Hide lyrics
+
             if (elapsed > settings.introDuration) {
                  // Intro finished, start audio
                  handleIntroComplete();
@@ -535,6 +564,15 @@ function App() {
              // Normal Playback / Recording Mode
              time = audioRef.current.currentTime;
              setCurrentTime(time);
+             
+             // Fade in lyrics at start of playback if we just came from intro
+             // We can check if time < FADE_DURATION
+             titleOpacity = 0; // Hide title
+             if (time < FADE_DURATION) {
+                lyricsOpacity = Math.min(1.0, time / FADE_DURATION);
+             } else {
+                lyricsOpacity = 1.0;
+             }
         }
 
         // --- Snappy Smooth Scroll Logic ---
@@ -568,6 +606,8 @@ function App() {
           smoothActiveIndex: smoothIndexRef.current,
           absoluteTime: performance.now(),
           isIntro,
+          titleOpacity,
+          lyricsOpacity,
           settings,
         });
       }
@@ -601,19 +641,55 @@ function App() {
   }, [isPlaying, recordingPhase]);
 
   // Recording Logic
-  const startRecording = () => {
+  const startRecording = async () => {
     if (!canvasRef.current || !audioRef.current) return;
     
-    // 1. Setup Stream
-    const canvasStream = canvasRef.current.captureStream(60); 
-    const finalStream = new MediaStream([...canvasStream.getTracks()]);
-    
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const audioEl = audioRef.current as any;
-    if (audioEl.captureStream || audioEl.mozCaptureStream) {
-       const audioStream = audioEl.captureStream ? audioEl.captureStream() : audioEl.mozCaptureStream();
-       audioStream.getAudioTracks().forEach((track: MediaStreamTrack) => finalStream.addTrack(track));
+    // 1. Initialize Web Audio API to handle mixing (Intro Silence + Music)
+    if (!audioContextRef.current) {
+      audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
     }
+    const actx = audioContextRef.current;
+
+    // 2. Resume context if suspended (browser autoplay policy)
+    if (actx.state === 'suspended') {
+      try { await actx.resume(); } catch (e) { console.error("Could not resume audio context", e); }
+    }
+
+    // 3. Create Destination for Recorder
+    if (!audioDestNodeRef.current) {
+      audioDestNodeRef.current = actx.createMediaStreamDestination();
+    }
+    const dest = audioDestNodeRef.current;
+
+    // 4. Connect Audio Element (Once only)
+    // We need to route the audio element through the context to the recorder AND the speakers
+    if (!audioSourceNodeRef.current && audioRef.current) {
+      try {
+          audioSourceNodeRef.current = actx.createMediaElementSource(audioRef.current);
+          audioSourceNodeRef.current.connect(dest); // To Recorder
+          audioSourceNodeRef.current.connect(actx.destination); // To Speakers (Monitor)
+      } catch (err) {
+          console.warn("Audio node already connected or error:", err);
+      }
+    }
+
+    // 5. Create Active Silence (Oscillator)
+    // This is CRITICAL. MediaRecorder often pauses if the audio track is inactive (paused).
+    // By playing a silent oscillator, we keep the audio clock running during the Intro phase.
+    const osc = actx.createOscillator();
+    const gain = actx.createGain();
+    gain.gain.value = 0; // Silence
+    osc.connect(gain);
+    gain.connect(dest); // Connect silence to recorder stream
+    osc.start();
+    silenceOscRef.current = osc; // Store to stop later
+
+    // 6. Setup Stream
+    const canvasStream = canvasRef.current.captureStream(60); 
+    const finalStream = new MediaStream([
+        ...canvasStream.getVideoTracks(),
+        ...dest.stream.getAudioTracks()
+    ]);
 
     const options = { 
         mimeType: 'video/webm; codecs=vp9',
@@ -633,6 +709,13 @@ function App() {
             setRecordingPhase('idle');
             setIsRecording(false);
             setIsPlaying(false);
+            
+            // Cleanup oscillator
+            if(silenceOscRef.current) {
+                try { silenceOscRef.current.stop(); } catch(e){}
+                silenceOscRef.current.disconnect();
+                silenceOscRef.current = null;
+            }
         };
 
         mediaRecorderRef.current = recorder;
@@ -641,7 +724,7 @@ function App() {
         setIsRecording(true);
         setDownloadUrl(null);
 
-        // 2. Start Intro Phase
+        // 7. Start Intro Phase
         audioRef.current.currentTime = 0;
         audioRef.current.pause();
         smoothIndexRef.current = 0;

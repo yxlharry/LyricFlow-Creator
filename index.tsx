@@ -566,7 +566,6 @@ function App() {
              setCurrentTime(time);
              
              // Fade in lyrics at start of playback if we just came from intro
-             // We can check if time < FADE_DURATION
              titleOpacity = 0; // Hide title
              if (time < FADE_DURATION) {
                 lyricsOpacity = Math.min(1.0, time / FADE_DURATION);
@@ -644,13 +643,16 @@ function App() {
   const startRecording = async () => {
     if (!canvasRef.current || !audioRef.current) return;
     
-    // 1. Initialize Web Audio API to handle mixing (Intro Silence + Music)
+    // 1. Initialize Web Audio API with high quality settings
     if (!audioContextRef.current) {
-      audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+      audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({
+          latencyHint: 'playback',
+          sampleRate: 48000 // Ensure high-fidelity sample rate
+      });
     }
     const actx = audioContextRef.current;
 
-    // 2. Resume context if suspended (browser autoplay policy)
+    // 2. Resume context if suspended
     if (actx.state === 'suspended') {
       try { await actx.resume(); } catch (e) { console.error("Could not resume audio context", e); }
     }
@@ -661,40 +663,44 @@ function App() {
     }
     const dest = audioDestNodeRef.current;
 
-    // 4. Connect Audio Element (Once only)
-    // We need to route the audio element through the context to the recorder AND the speakers
+    // 4. Connect Audio Element
     if (!audioSourceNodeRef.current && audioRef.current) {
       try {
           audioSourceNodeRef.current = actx.createMediaElementSource(audioRef.current);
-          audioSourceNodeRef.current.connect(dest); // To Recorder
-          audioSourceNodeRef.current.connect(actx.destination); // To Speakers (Monitor)
+          audioSourceNodeRef.current.connect(dest); 
+          audioSourceNodeRef.current.connect(actx.destination); 
       } catch (err) {
-          console.warn("Audio node already connected or error:", err);
+          console.warn("Audio node already connected:", err);
       }
     }
 
-    // 5. Create Active Silence (Oscillator)
-    // This is CRITICAL. MediaRecorder often pauses if the audio track is inactive (paused).
-    // By playing a silent oscillator, we keep the audio clock running during the Intro phase.
+    // 5. Active Silence (Keep recording clock alive during intro)
     const osc = actx.createOscillator();
     const gain = actx.createGain();
-    gain.gain.value = 0; // Silence
+    gain.gain.value = 0; 
     osc.connect(gain);
-    gain.connect(dest); // Connect silence to recorder stream
+    gain.connect(dest); 
     osc.start();
-    silenceOscRef.current = osc; // Store to stop later
+    silenceOscRef.current = osc;
 
-    // 6. Setup Stream
+    // 6. Setup Stream & High Quality Recorder Options
     const canvasStream = canvasRef.current.captureStream(60); 
     const finalStream = new MediaStream([
         ...canvasStream.getVideoTracks(),
         ...dest.stream.getAudioTracks()
     ]);
 
+    // High Quality Recording Settings
     const options = { 
-        mimeType: 'video/webm; codecs=vp9',
-        videoBitsPerSecond: 8000000 // 8 Mbps high quality
+        mimeType: 'video/webm; codecs=vp9,opus', // Use Opus for superior high-bitrate quality
+        videoBitsPerSecond: 8000000, // 8 Mbps Video
+        audioBitsPerSecond: 320000  // 320 kbps Audio (Max high quality)
     };
+    
+    // Fallback if specific codec is not supported
+    if (!MediaRecorder.isTypeSupported(options.mimeType)) {
+        delete options.mimeType;
+    }
     
     try {
         const recorder = new MediaRecorder(finalStream, options);
@@ -710,7 +716,6 @@ function App() {
             setIsRecording(false);
             setIsPlaying(false);
             
-            // Cleanup oscillator
             if(silenceOscRef.current) {
                 try { silenceOscRef.current.stop(); } catch(e){}
                 silenceOscRef.current.disconnect();
@@ -733,7 +738,7 @@ function App() {
         
     } catch (e) {
         console.error("Recording error", e);
-        alert("Could not start recording. " + e);
+        alert("Could not start recording high-quality video.");
     }
   };
 
@@ -761,7 +766,7 @@ function App() {
           <h1 className="text-3xl font-bold bg-gradient-to-r from-sky-400 to-indigo-400 bg-clip-text text-transparent">
             LyricFlow Creator
           </h1>
-          <p className="text-slate-400 text-sm mt-1">Generate High-Quality Lyric Videos directly in browser</p>
+          <p className="text-slate-400 text-sm mt-1">Generate 320kbps Audio Karaoke Videos directly in browser</p>
         </div>
         
         <div className="flex gap-3">
@@ -781,7 +786,7 @@ function App() {
                 disabled={!media.audioUrl || !media.lyrics.length}
                 className="flex items-center gap-2 px-6 py-2.5 bg-rose-600 hover:bg-rose-500 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg font-bold transition-all shadow-lg shadow-rose-900/40 hover:scale-105 active:scale-95"
              >
-                <MonitorPlay size={20} /> Record Video
+                <MonitorPlay size={20} /> Record High Quality
              </button>
           ) : (
             <button
